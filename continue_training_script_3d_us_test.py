@@ -41,6 +41,7 @@ from torchvision.utils import make_grid
 
 from test_gpu import setup_cuda
 
+accelerator = Accelerator()
 
 
 @dataclass
@@ -53,23 +54,38 @@ class TrainingConfig:
     eval_batch_size: int  = 32  # how many images to sample during evaluation
 
     num_epochs: int = 500
-    save_image_epochs: int  = 25
-    save_model_epochs: int  = 25
+    save_image_epochs: int  = 50
+    save_model_epochs: int  = 50
 
     
     gradient_accumulation_steps: int = 1
-    learning_rate: float = 0.000065
+    learning_rate: float = 1e-4 * 0.25 * 0.1
     lr_warmup_steps: int = 0
 
     mixed_precision: str = "fp16"  # `no` for float32, `fp16` for automatic mixed precision
-    results_dir: str = "results_cropped_test_multigpu_cont" 
-    dataset_dir: str = "dataset_cropped2"
+    results_dir: str = "results_dataset_Vol3_345_f_2_cont2_test___" 
+    dataset_dir: str = ""
 
 
     cond_dim: int = 6
     cond_embedding_dim: int = 128
     cond_parameters: List = field(default_factory=lambda: ['pos_x', 'pos_y', 'pos_z', "rot_x", "rot_y", "rot_z"])
 
+    multi_gpu: bool = True
+
+    def get_transforms(self, input = None):
+        ops = []
+
+        if input:
+            for t in input:
+                ops.append(eval(f"T.{t}"))
+
+        else:
+            for t in self.transform:
+                ops.append(eval(f"T.{t}"))
+
+
+        return T.Compose(ops)
 
 
 class CustomConditionedUNet(nn.Module):
@@ -187,11 +203,134 @@ class ConditionedDDPMPipeline(DDPMPipeline):
 
 
 
- 
+class CombinedImageVectorDataset3DUSG(Dataset):
+    def __init__(self, dir_list, image_size, transforms):
 
+
+        self.image_names_list = []
+        self.image_names_only_list = []
+    
+        self.label_csv_list = []
+
+        for dir in dir_list:
+            
+            label_csv = os.path.join(dir, "poses_unity.csv")
+            image_dir = os.path.join(dir, "images")
+
+            image_names = os.listdir(image_dir)
+
+            df = pd.read_csv(label_csv)
+            print(df.shape)
+            print(df.head(3))
+            print("image_names ", len(image_names))
+            # self.image_dir = image_dir
+            # df = df[df['filename'].isin(image_names)]
+            print(df.shape)
+
+            self.label_csv_list.append(df)
+
+            self.image_names_only_list.extend(image_names)
+
+
+
+            for img_name in image_names:
+
+                self.image_names_list.append(os.path.join(image_dir,img_name))
+
+
+            print(len(self.image_names_list))
+            print(len(self.image_names_only_list))
+
+        print(self.image_names_list[:5])
+        print(self.image_names_only_list[:5])
+
+
+        self.df = pd.concat(self.label_csv_list, ignore_index = True)
+
+        self.t = 0
+        print(self.df.shape)
+
+
+
+        self.transform = transforms
+
+        print("dataset transform", self.transform)
+
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+
+        # print(idx)
+
+
+
+
+        # print(row)
+        # print(row.values)
+        # print(row.values[0][1:])
+        # print(type(row.values[0][1:]))
+        # print(row["pos_x"].values)
+
+        
+        # image = Image.open(image_path).convert("L")
+        # image = self.transform(image)
+
+        # # vector = torch.tensor([row['pos_x'].values, row['pos_y'].values, row['pos_z'].values, 
+        # #                        row['rot_x'].values, row['rot_y'].values, row['rot_z'].values], dtype=torch.float32)
+    
+        # vector = torch.from_numpy(row.values[0][1:].astype(np.float32))
+        # return image, vector
+    
+
+        try:
+            image_path = self.image_names_list[idx]
+        # print(image_path)
+
+            row = self.df[self.df["filename"] == image_path.split("/")[-1]]
+            image = Image.open(image_path).convert("L")
+            
+            image = self.transform(image)
+            self.lastimg = image
+
+            
+        except Exception as e:
+            self.t+=1
+
+            image = self.lastimg
+
+            print(idx)
+                        
+            print(image_path)
+            print(row)
+            
+        vector = torch.from_numpy(row.values[0][1:].astype(np.float32))
+        return image, vector #image_path.split("/")[-1]
+
+
+
+
+    def generate_images_from_df(self, df_sample):
+            
+        filename_names = df_sample['filename']
+        # print(filename_names)
+        # print("df_sample ", df_sample)
+
+        images_out = []
+        for index, row in df_sample.iterrows():
+            # print(index, row)
+
+            image, _ = self.__getitem__(index)
+            # print(image.shape)
+            images_out.append(image)
+
+        images_out_tensor = torch.stack(images_out, dim=1)
+        # print(images_out_tensor.shape)
+        return images_out_tensor
 
 class ImageVectorDataset3DUSG(Dataset):
-    def __init__(self, image_dir, label_csv, image_size=64):
+    def __init__(self, image_dir, label_csv, image_size, transforms):
         self.df = pd.read_csv(label_csv)
         self.image_dir = image_dir
 
@@ -208,13 +347,9 @@ class ImageVectorDataset3DUSG(Dataset):
         print(self.df.shape)
 
 
-        self.transform = T.Compose([
-            T.CenterCrop(300),
-            T.Resize((image_size, image_size)),
-            T.ToTensor(),
-            T.Normalize([0.5], [0.5])
-        ])
+        self.transform = transforms
 
+        print("dataset transform", self.transform)
 
 
         print(self.df.shape)
@@ -258,6 +393,7 @@ class ImageVectorDataset3DUSG(Dataset):
     def __len__(self):
         return len(self.df)
 
+
     def __getitem__(self, idx):
 
         row = self.df.iloc[idx]
@@ -291,13 +427,49 @@ class ImageVectorDataset3DUSG(Dataset):
 
 
 
+def interleave_tensors(images, gt_images):
 
-def my_make_grid(images, rows, cols):
+    # images = images.permute(1,0,2,3 )
+    gt_images = gt_images.to(images.device)
+    gt_images = gt_images.permute(1,0,2,3)
 
-    grid = make_grid(images, nrow=3, padding=2, normalize=True)
+    B1 = images.shape[0]
+    B2 = gt_images.shape[0]
+    print(images.shape, gt_images.shape)
+
+    C, H, W = images.shape[1], images.shape[2], images.shape[3]
+
+    # Find the smaller and larger batch size
+    min_len = min(B1, B2)
+    max_len = max(B1, B2)
+
+    # Interleave first min_len elements
+    # print([images[:,:min_len].shape, gt_images[:,:min_len]].shape)
+    interleaved = torch.stack([images[:min_len], gt_images[:min_len]], dim=1)
+    print(interleaved.shape)
+    interleaved = interleaved.reshape(-1, C, H, W)
+    print(interleaved.shape)
+
+    # Append remaining items from the longer tensor
+
+    remainder = gt_images[min_len:]
+
+    # Concatenate
+    result = torch.cat([interleaved, remainder], dim=0)
+    return result
+
+
+def my_make_grid(images, gt_images, rows):
+
+    images_to_grid = interleave_tensors(images, gt_images)
+    print("images_to_grid ", images_to_grid.shape)
+
+    grid = make_grid(images_to_grid, nrow=rows, padding=5, normalize=True)
 
     grid_pil = to_pil_image(grid)
     return grid_pil
+
+
 
 def mse(img1, img2):
 
@@ -330,7 +502,7 @@ def evaluate(config, epoch, pipeline, dfs, gt_images):
     
 
 
-    # print(images.shape, gt_images.shape)
+    print(images.shape, gt_images.shape)
     # print(images.device, gt_images[0].device)
     error = mse(images[:,0,:,:], gt_images[0].to(images.device))
     # print(error.size())
@@ -338,7 +510,7 @@ def evaluate(config, epoch, pipeline, dfs, gt_images):
     # print(error.mean())
 
 
-    image_grid = my_make_grid(images,rows=4, cols=4)
+    image_grid = my_make_grid(images, gt_images, rows=2)
 
     # Save the images
     test_dir = os.path.join(config.results_dir, "samples")
@@ -399,7 +571,7 @@ class EarlyStopping:
 
 
 
-def train_loop(config, model, noise_scheduler, optimizer, train_dataloader, lr_scheduler, device, resume_from_checkpoint):
+def train_loop(config, model, noise_scheduler, optimizer, train_dataloader, lr_scheduler, resume_from_checkpoint):
 
 
     # global_step = 438001
@@ -434,12 +606,7 @@ def train_loop(config, model, noise_scheduler, optimizer, train_dataloader, lr_s
         print(cumulative_time)
 
     # Initialize accelerator and tensorboard logging
-    accelerator = Accelerator(
-        mixed_precision=config.mixed_precision,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        log_with="tensorboard",
-        project_dir=os.path.join(config.results_dir, "logs"),
-    )
+
     if accelerator.is_main_process:
 
         if config.results_dir is not None:
@@ -574,12 +741,14 @@ if __name__ == "__main__":
     os.makedirs(config.results_dir, exist_ok=True)
 
 
+    if config.multi_gpu:
+        setup_cuda(use_memory_fraction=0.8, num_threads=16, visible_devices="0,1,2", multiGPU=True)
+    else:
+        setup_cuda(use_memory_fraction=0.8, num_threads=16, visible_devices="0,1", use_cuda_with_id = 0)
 
-    setup_cuda(use_memory_fraction=0.9, num_threads=16, visible_devices="0,1,2", use_cuda_with_id = 2)
-    # setup_cuda(use_memory_fraction=1.0, num_threads=8, visible_devices="0,1",  multiGPU=True)
 
 
-    RESULTS_PATH = "results_cropped_test_multigpu"
+    RESULTS_PATH = "results_dataset_Vol3_345_f_2_cont"
 
     with open(f'{RESULTS_PATH}/training_config.json') as f:
         training_config = json.load(f)
@@ -589,15 +758,20 @@ if __name__ == "__main__":
     
     df_training_results = pd.read_csv(f'{RESULTS_PATH}/training_log.csv')
 
-    device = torch.device("cuda", 2)
+    # device = torch.device("cuda", 2)
 
     # print(torch.cuda.current_device())
     # print(torch.cuda.device_count())
     # print(device)
 
 
-    dataset = ImageVectorDataset3DUSG(f"{training_config['dataset_dir']}/images", f"{training_config['dataset_dir']}/poses_unity.csv", image_size=config.image_size)
-    dataset.preprocess()
+    # dataset = ImageVectorDataset3DUSG(f"{training_config['dataset_dir']}/images", f"{training_config['dataset_dir']}/poses_unity.csv", image_size=config.image_size)
+    # dataset.preprocess()
+
+    dataset_transform = config.get_transforms(training_config['transform'])
+
+    dataset = CombinedImageVectorDataset3DUSG(["dataset_Vol3_f", "dataset_Vol4_f", "dataset_Vol5_f"], image_size=training_config['image_size'], transforms = dataset_transform)
+
 
     train_dataloader = DataLoader(dataset, batch_size=config.train_batch_size, num_workers=16, shuffle=True) #training_config['train_batch_size']
     print("dataset len", len(dataset))
@@ -645,7 +819,7 @@ if __name__ == "__main__":
         optimizer,
         num_warmup_steps=config.lr_warmup_steps,
         num_training_steps=(len(train_dataloader) * config.num_epochs),
-        min_lr_ratio=0.1)  # e.g., ends at 10% of max LR
+        min_lr_ratio=0.001)  # e.g., ends at 10% of max LR
 
 
     # print(checkpoint["lr_scheduler"])
@@ -712,7 +886,7 @@ if __name__ == "__main__":
     # print(cumulative_time)
 
 
-    train_loop(config, model, noise_scheduler, optimizer, train_dataloader, lr_scheduler, device, resume_from_checkpoint)
+    train_loop(config, model, noise_scheduler, optimizer, train_dataloader, lr_scheduler, resume_from_checkpoint)
 
 
 

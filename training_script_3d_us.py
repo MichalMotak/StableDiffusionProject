@@ -60,8 +60,8 @@ class TrainingConfig:
     image_size: int = 128  # the generated image resolution
     image_format:str = "gray"
 
-    train_batch_size: int  = 32
-    eval_batch_size: int  = 8  # how many images to sample during evaluation
+    train_batch_size: int  = 64
+    eval_batch_size: int  = 32  # how many images to sample during evaluation
 
     num_epochs: int = 1000
     save_image_epochs: int  = 25
@@ -70,13 +70,12 @@ class TrainingConfig:
     
     gradient_accumulation_steps: int = 1
     learning_rate: float = 1e-4
-    lr_warmup_steps: int = 50
+    lr_warmup_steps: int = 0
 
 
     mixed_precision: str = "fp16"  # `no` for float32, `fp16` for automatic mixed precision
-    results_dir: str = "results_3d_usvol3_ds4_2" 
-    dataset_dir: str = "dataset_Vol3_4"
-
+    results_dir: str = "results_dataset_Vol3_123" 
+    dataset_dir: str = ""
 
     cond_dim: int = 6
     cond_embedding_dim: int = 128
@@ -255,7 +254,135 @@ class ConditionedDDPMPipeline(DDPMPipeline):
 
 
 
+class CombinedImageVectorDataset3DUSG(Dataset):
+    def __init__(self, dir_list, image_size=64):
 
+
+        self.image_names_list = []
+        self.image_names_only_list = []
+    
+        self.label_csv_list = []
+
+        for dir in dir_list:
+            
+            label_csv = os.path.join(dir, "poses_unity.csv")
+            image_dir = os.path.join(dir, "images")
+
+            image_names = os.listdir(image_dir)
+
+            df = pd.read_csv(label_csv)
+            print(df.shape)
+            print(df.head(3))
+            print("image_names ", len(image_names))
+            # self.image_dir = image_dir
+            # df = df[df['filename'].isin(image_names)]
+            print(df.shape)
+
+            self.label_csv_list.append(df)
+
+            self.image_names_only_list.extend(image_names)
+
+
+
+            for img_name in image_names:
+
+                self.image_names_list.append(os.path.join(image_dir,img_name))
+
+
+            print(len(self.image_names_list))
+            print(len(self.image_names_only_list))
+
+        print(self.image_names_list[:5])
+        print(self.image_names_only_list[:5])
+
+
+        self.df = pd.concat(self.label_csv_list, ignore_index = True)
+
+        self.t = 0
+        print(self.df.shape)
+
+        print(self.df.head(10))
+
+
+        self.transform = T.Compose([
+            T.Resize((image_size, image_size)),
+            T.ToTensor(),
+            T.Normalize([0.5], [0.5])
+        ])
+
+
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+
+        # print(idx)
+
+
+
+
+        # print(row)
+        # print(row.values)
+        # print(row.values[0][1:])
+        # print(type(row.values[0][1:]))
+        # print(row["pos_x"].values)
+
+        
+        # image = Image.open(image_path).convert("L")
+        # image = self.transform(image)
+
+        # # vector = torch.tensor([row['pos_x'].values, row['pos_y'].values, row['pos_z'].values, 
+        # #                        row['rot_x'].values, row['rot_y'].values, row['rot_z'].values], dtype=torch.float32)
+    
+        # vector = torch.from_numpy(row.values[0][1:].astype(np.float32))
+        # return image, vector
+    
+
+        # try:
+        image_path = self.image_names_list[idx]
+    # print(image_path)
+
+        row = self.df[self.df["filename"] == image_path.split("/")[-1]]
+        image = Image.open(image_path).convert("L")
+        
+        image = self.transform(image)
+        self.lastimg = image
+
+            
+        # except Exception as e:
+            # self.t+=1
+
+            # image = self.lastimg
+
+            # print(idx)
+                        
+            # print(image_path)
+        # print(row)
+            
+        vector = torch.from_numpy(row.values[0][1:].astype(np.float32))
+        return image, vector #image_path.split("/")[-1]
+
+
+
+
+    def generate_images_from_df(self, df_sample):
+            
+        filename_names = df_sample['filename']
+        # print(filename_names)
+        # print("df_sample ", df_sample)
+
+        images_out = []
+        for index, row in df_sample.iterrows():
+            # print(index, row)
+
+            image, _ = self.__getitem__(index)
+            # print(image.shape)
+            images_out.append(image)
+
+        images_out_tensor = torch.stack(images_out, dim=1)
+        # print(images_out_tensor.shape)
+        return images_out_tensor
  
 
 class ImageVectorDataset3DUSG(Dataset):
@@ -277,6 +404,7 @@ class ImageVectorDataset3DUSG(Dataset):
 
 
         self.transform = T.Compose([
+            T.CenterCrop(300),
             T.Resize((image_size, image_size)),
             T.ToTensor(),
             T.Normalize([0.5], [0.5])
@@ -469,13 +597,7 @@ class EarlyStopping:
 
 
 def train_loop(config, model, noise_scheduler, optimizer, train_dataloader, lr_scheduler, device):
-    # Initialize accelerator and tensorboard logging
-    accelerator = Accelerator(
-        mixed_precision=config.mixed_precision,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        log_with="tensorboard",
-        project_dir=os.path.join(config.results_dir, "logs"),
-    )
+
     if accelerator.is_main_process:
 
         if config.results_dir is not None:
@@ -484,14 +606,16 @@ def train_loop(config, model, noise_scheduler, optimizer, train_dataloader, lr_s
 
 
     csv_log_path = os.path.join(config.results_dir, "training_log.csv")
-    
-    if os.path.exists(csv_log_path):
-        os.remove(csv_log_path)
-    
-    
-    with open(csv_log_path, mode="w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Epoch", "Step", "Loss", "Learning Rate", "Epoch Time(s)", "Cumulative Time(s)", "evaluation_mse"])
+    if accelerator.is_main_process:
+
+        if os.path.exists(csv_log_path):
+            os.remove(csv_log_path)
+        
+    if accelerator.is_main_process:
+
+        with open(csv_log_path, mode="w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Epoch", "Step", "Loss", "Learning Rate", "Epoch Time(s)", "Cumulative Time(s)", "evaluation_mse"])
 
 
 
@@ -518,175 +642,180 @@ def train_loop(config, model, noise_scheduler, optimizer, train_dataloader, lr_s
     early_stopping = EarlyStopping(patience=500, min_delta=0, verbose=False)
     epoch_min_loss = 1000
 
+
+    if accelerator.is_main_process:
+
     # Now you train the model
-    for epoch in range(config.num_epochs):
-        progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
-        progress_bar.set_description(f"Epoch {epoch}")
+        for epoch in range(config.num_epochs):
+            progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
+            progress_bar.set_description(f"Epoch {epoch}")
 
-        epoch_start_time = time.time()
-        epoch_loss = []
+            epoch_start_time = time.time()
+            epoch_loss = []
 
-        eval_mse_epoch = []
+            eval_mse_epoch = []
 
-        for step, (clean_images, cond_vectors) in enumerate(train_dataloader):
-            # Sample noise to add to the images
-            # noise = torch.randn(clean_images.shape)
-            # clean_images = clean_images.to(device)
-            # cond_vectors = cond_vectors.to(device)
+            for step, (clean_images, cond_vectors) in enumerate(train_dataloader):
+                # Sample noise to add to the images
+                # noise = torch.randn(clean_images.shape)
+                # clean_images = clean_images.to(device)
+                # cond_vectors = cond_vectors.to(device)
 
-            noise = torch.randn_like(clean_images)
-            bs = clean_images.shape[0]
+                noise = torch.randn_like(clean_images)
+                bs = clean_images.shape[0]
 
-            # print("cond_vectors ", cond_vectors)
-            # print("cond_vector train", cond_vectors, cond_vectors.shape)
+                # print("cond_vectors ", cond_vectors)
+                # print("cond_vector train", cond_vectors, cond_vectors.shape)
 
-            # Sample a random timestep for each image
-            timesteps = torch.randint(
-                0, noise_scheduler.config.num_train_timesteps, (bs,), device=clean_images.device
-            ).long()
-
-
-            # Add noise to the clean images according to the noise magnitude at each timestep
-            # (this is the forward diffusion process)
-            noisy_images = noise_scheduler.add_noise(clean_images, noise, timesteps)
+                # Sample a random timestep for each image
+                timesteps = torch.randint(
+                    0, noise_scheduler.config.num_train_timesteps, (bs,), device=clean_images.device
+                ).long()
 
 
-
-            with accelerator.accumulate(model):
-                # Predict the noise residual
-                # noise_pred = model(noisy_images, timesteps, return_dict=False)[0]
-                noise_pred = model(noisy_images, timestep=timesteps, cond_vector=cond_vectors).sample
-
-                # print(type(noise_pred), type(noise))
-                # print(noise_pred.size(), noise.size())
-
-                
-                loss = F.mse_loss(noise_pred, noise)
-                epoch_loss.append(loss.detach().item())
-
-                accelerator.backward(loss)
-
-                accelerator.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-
-                mean_epoch_loss = sum(epoch_loss)/len(epoch_loss)
-
-
-                progress_bar.update(1)
-                logs = {"loss": mean_epoch_loss, "lr": lr_scheduler.get_last_lr()[0], "step": global_step}
-                progress_bar.set_postfix(**logs)
-                accelerator.log(logs, step=global_step)
-                global_step += 1
+                # Add noise to the clean images according to the noise magnitude at each timestep
+                # (this is the forward diffusion process)
+                noisy_images = noise_scheduler.add_noise(clean_images, noise, timesteps)
 
 
 
-        epoch_end_time = time.time()
-        epoch_duration = epoch_end_time - epoch_start_time
-        cumulative_time += epoch_duration
+                with accelerator.accumulate(model):
+                    # Predict the noise residual
+                    # noise_pred = model(noisy_images, timesteps, return_dict=False)[0]
+                    noise_pred = model(noisy_images, timestep=timesteps, cond_vector=cond_vectors).sample
 
-        progress_bar.set_description(
-        f"Epoch {epoch} | Time: {epoch_duration:.2f}s | Total: {cumulative_time:.2f}s")
-        progress_bar.close()
+                    # print(type(noise_pred), type(noise))
+                    # print(noise_pred.size(), noise.size())
 
-        if eval_mse == 0:
-            eval_mse = 0
+                    
+                    loss = F.mse_loss(noise_pred, noise)
+                    epoch_loss.append(loss.detach().item())
 
-        csv_log_buffer.append([epoch, global_step, mean_epoch_loss, lr_scheduler.get_last_lr()[0], epoch_duration, cumulative_time, eval_mse])
+                    accelerator.backward(loss)
+
+                    accelerator.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+
+                    mean_epoch_loss = sum(epoch_loss)/len(epoch_loss)
 
 
-        pipeline = ConditionedDDPMPipeline(
-                        unet=accelerator.unwrap_model(model),
-                        scheduler=noise_scheduler,
-                        image_size = config.image_size)
+                    progress_bar.update(1)
+                    logs = {"loss": mean_epoch_loss, "lr": lr_scheduler.get_last_lr()[0], "step": global_step}
+                    progress_bar.set_postfix(**logs)
+                    accelerator.log(logs, step=global_step)
+                    global_step += 1
+
+
+
+            epoch_end_time = time.time()
+            epoch_duration = epoch_end_time - epoch_start_time
+            cumulative_time += epoch_duration
+
+            progress_bar.set_description(
+            f"Epoch {epoch} | Time: {epoch_duration:.2f}s | Total: {cumulative_time:.2f}s")
+            progress_bar.close()
+
+            if eval_mse == 0:
+                eval_mse = 0
+
+            csv_log_buffer.append([epoch, global_step, mean_epoch_loss, lr_scheduler.get_last_lr()[0], epoch_duration, cumulative_time, eval_mse])
+
+
+            pipeline = ConditionedDDPMPipeline(
+                            unet=accelerator.unwrap_model(model),
+                            scheduler=noise_scheduler,
+                            image_size = config.image_size)
         
 
 
-        training_losses_list.append(mean_epoch_loss)
-        if mean_epoch_loss < epoch_min_loss:
-            epoch_min_loss = mean_epoch_loss
+
+            # After each epoch you optionally sample some demo images with evaluate() and save the model
+
+            training_losses_list.append(mean_epoch_loss)
+            if mean_epoch_loss < epoch_min_loss:
+                epoch_min_loss = mean_epoch_loss
 
 
-            if (epoch+1) > 0:
-                # torch.save(accelerator.unwrap_model(model).state_dict(), f"model_{config.results_dir}.pt")
-                pipeline.save_pretrained(config.results_dir)
+                if (epoch+1) > 0:
+                    # torch.save(accelerator.unwrap_model(model).state_dict(), f"model_{config.results_dir}.pt")
+                    pipeline.save_pretrained(config.results_dir)
 
-                checkpoint_path = os.path.join(config.results_dir, f"best_model.pt")
-                torch.save({
-                    "model": accelerator.unwrap_model(model).state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "lr_scheduler": lr_scheduler.state_dict(),
-                    "epoch": epoch + 1,
-                    "global_step": global_step,
-                    "epoch_min_loss": epoch_min_loss,
-                    "cumulative_time": cumulative_time,
-                    "evaluation_mse": eval_mse
-                }, checkpoint_path)
-
-
-                if len(csv_log_buffer) > 0:
-                    with open(csv_log_path, mode="a", newline="") as f:
-                        writer = csv.writer(f)
-                        writer.writerows(csv_log_buffer)
-                    csv_log_buffer.clear()
-
-                    print("Saved ", epoch_min_loss)
+                    checkpoint_path = os.path.join(config.results_dir, f"best_model.pt")
+                    torch.save({
+                        "model": accelerator.unwrap_model(model).state_dict(),
+                        "optimizer": optimizer.state_dict(),
+                        "lr_scheduler": lr_scheduler.state_dict(),
+                        "epoch": epoch + 1,
+                        "global_step": global_step,
+                        "epoch_min_loss": epoch_min_loss,
+                        "cumulative_time": cumulative_time,
+                        "evaluation_mse": eval_mse
+                    }, checkpoint_path)
 
 
+                    if len(csv_log_buffer) > 0:
+                        with open(csv_log_path, mode="a", newline="") as f:
+                            writer = csv.writer(f)
+                            writer.writerows(csv_log_buffer)
+                        csv_log_buffer.clear()
 
-        # After each epoch you optionally sample some demo images with evaluate() and save the model
-        if accelerator.is_main_process:
-
-
-            if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
-
-                dfs = train_dataloader.dataset.df.sample(config.eval_batch_size)
-
-                # Generate GT images for evaluation 
-                gt_images = train_dataloader.dataset.generate_images_from_df(dfs)
-
-                eval_mse_batch = evaluate(config, epoch, pipeline, dfs, gt_images)
-                eval_mse = eval_mse_batch.mean()
-
-                eval_mse_epoch = [(epoch + 1), eval_mse.item()]
-                eval_mse_epoch.extend(eval_mse_batch.tolist())
-                # print(eval_mse_epoch)
-
-                # print(eval_mse_batch.tolist())
-                # eval_mse_epoch.append(eval_mse_batch.tolist().insert(0,eval_mse.item()))
-                # print(eval_mse_epoch)
-
-                evaluation_results.append(eval_mse_epoch)
-                # print(evaluation_results)
-
-                evaluation_results_np = np.array(evaluation_results)
-                # print("evaluation_results_np " , evaluation_results_np.shape)
-                # print(evaluation_results_np)
-
-                #Save training results to csv
-
-                if len(csv_log_buffer) > 0:
-                    with open(csv_log_path, mode="a", newline="") as f:
-                        writer = csv.writer(f)
-                        writer.writerows(csv_log_buffer)
-                    csv_log_buffer.clear()
-
-                    print("Saved ", epoch_min_loss)
+                        print("Saved ", epoch_min_loss)
 
 
-                # Save evaluation results
 
-                df_eval_results = pd.DataFrame(evaluation_results_np)
-                df_eval_results.to_csv(f"{config.results_dir}/eval_mse.csv")
+                if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
 
-        early_stopping(mean_epoch_loss)
-        if early_stopping.early_stop:
-            print(f"Stopping training early at epoch {epoch}, loss: {mean_epoch_loss}")
-            print(early_stopping.counter)
-            print(early_stopping.best_loss)
+                    dfs = train_dataloader.dataset.df.sample(config.eval_batch_size)
 
-            break
+                    # Generate GT images for evaluation 
+                    gt_images = train_dataloader.dataset.generate_images_from_df(dfs)
+
+                    eval_mse_batch = evaluate(config, epoch, pipeline, dfs, gt_images)
+                    eval_mse = eval_mse_batch.mean()
+
+                    eval_mse_epoch = [(epoch + 1), eval_mse.item()]
+                    eval_mse_epoch.extend(eval_mse_batch.tolist())
+                    # print(eval_mse_epoch)
+
+                    # print(eval_mse_batch.tolist())
+                    # eval_mse_epoch.append(eval_mse_batch.tolist().insert(0,eval_mse.item()))
+                    # print(eval_mse_epoch)
+
+                    evaluation_results.append(eval_mse_epoch)
+                    # print(evaluation_results)
+
+                    evaluation_results_np = np.array(evaluation_results)
+                    # print("evaluation_results_np " , evaluation_results_np.shape)
+                    # print(evaluation_results_np)
+
+                    #Save training results to csv
+
+                    if len(csv_log_buffer) > 0:
+                        with open(csv_log_path, mode="a", newline="") as f:
+                            writer = csv.writer(f)
+                            writer.writerows(csv_log_buffer)
+                        csv_log_buffer.clear()
+
+                        print("Saved ", epoch_min_loss)
+
+
+                    # Save evaluation results
+
+                    df_eval_results = pd.DataFrame(evaluation_results_np)
+                    df_eval_results.to_csv(f"{config.results_dir}/eval_mse.csv")
+
+            early_stopping(mean_epoch_loss)
+            if early_stopping.early_stop:
+                print(f"Stopping training early at epoch {epoch}, loss: {mean_epoch_loss}")
+                print(early_stopping.counter)
+                print(early_stopping.best_loss)
+
+                break
+
+
+accelerator = Accelerator()
 
 
 if __name__ == "__main__":
@@ -695,7 +824,8 @@ if __name__ == "__main__":
     # dataset = load_dataset(config.dataset_name, split="train")
     # dataset = load_dataset(config.dataset_name, cache_dir="/home/MichalMo/.cache/huggingface/datasets" , split="train")
 
-    os.makedirs(config.results_dir, exist_ok=True)
+    if accelerator.is_main_process:
+        os.makedirs(config.results_dir, exist_ok=True)
 
 
     # print("PyTorch CUDA available:", torch.cuda.is_available())
@@ -704,10 +834,10 @@ if __name__ == "__main__":
 
     # setup_cuda(use_memory_fraction=0.2, num_threads=4, device= "cpu")
 
-    setup_cuda(use_memory_fraction=0.9, num_threads=16, visible_devices="0,1", use_cuda_with_id = 1)
+    setup_cuda(use_memory_fraction=0.8, num_threads=16, visible_devices="0,1", use_cuda_with_id = 0)
     # setup_cuda(use_memory_fraction=0.9, num_threads=16, visible_devices="1,2",  multiGPU=True)
     
-    device = torch.device("cuda", 1)
+    device = torch.device("cuda", 0)
     
     # device0 = torch.device("cuda", 0)
     # device1 = torch.device("cuda", 1)
@@ -718,8 +848,11 @@ if __name__ == "__main__":
     print(device)
 
 
-    dataset = ImageVectorDataset3DUSG(f"{config.dataset_dir}/images", f"{config.dataset_dir}/poses_unity.csv", image_size=config.image_size)
-    dataset.preprocess()
+    # dataset = ImageVectorDataset3DUSG(f"{config.dataset_dir}/images", f"{config.dataset_dir}/poses_unity.csv", image_size=config.image_size)
+    # dataset = CombinedImageVectorDataset3DUSG(["dataset_Vol3_4", "dataset_Vol3_5"], image_size=config.image_size)
+    dataset = CombinedImageVectorDataset3DUSG(["dataset_Vol1_2", "dataset_Vol2_2", "dataset_Vol3_2"], image_size=config.image_size)
+
+    # dataset.preprocess()
 
     train_dataloader = DataLoader(dataset, batch_size=config.train_batch_size, num_workers=16, shuffle=True)
     print(len(dataset))
@@ -771,7 +904,7 @@ if __name__ == "__main__":
         optimizer,
         num_warmup_steps=config.lr_warmup_steps,
         num_training_steps=(len(train_dataloader) * config.num_epochs),
-        min_lr_ratio=0.25)  # e.g., ends at 10% of max LR
+        min_lr_ratio=0.1)  # e.g., ends at 10% of max LR
 
     
 
@@ -792,12 +925,13 @@ if __name__ == "__main__":
 
     # print(dataset.labels_list)
 
-    with open(f"{config.results_dir}/training_config.json", "w") as f:
-        json.dump(dataclasses.asdict(config), f, indent=4)
+    if accelerator.is_main_process:
+        with open(f"{config.results_dir}/training_config.json", "w") as f:
+            json.dump(dataclasses.asdict(config), f, indent=4)
 
-    # Save Dataset frame 
-    dataset.df.to_csv(f"{config.results_dir}/dataset_df.csv")
-    print(dataset.df.shape)
+        # Save Dataset frame 
+        dataset.df.to_csv(f"{config.results_dir}/dataset_df.csv")
+        print(dataset.df.shape)
 
 
     train_loop(config, model, noise_scheduler, optimizer, train_dataloader, lr_scheduler, device)

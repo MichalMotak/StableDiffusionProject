@@ -1,0 +1,59 @@
+load_checkpoint: "null"
+device: cuda
+results_folder:
+
+model:
+  dim: 64
+  dim_mults: 1, 2, 4, 8
+  num_classes: 256
+  cond_drop_prob: 0.2
+
+diffusion:
+  timesteps: 1000
+  sampling_timesteps: 250  
+
+trainer:
+  train_batch_size: 32
+  train_lr: 4e-5
+  num_workers: 16
+  num_samples: 16
+  save_and_sample_every: 5000
+  train_num_steps: 700000
+  gradient_accumulate_every: 8
+  ema_decay: 0.995
+
+dataset:
+  mode: train
+  image_size: 128
+  data_root: /path/to/CaDISv2
+  
+  embedding_type: masked
+  model_masked: ./results/graphencoder_masked/model.pt
+  graph_input_dim: 21
+  graph_hidden_dim: 256
+  graph_embedding_dim: 256 
+  trainable: False
+  return_graph_emb: True
+  
+  split_files:
+    train: ./configs/split/cadis_train.txt
+    val: ./configs/split/cadis_val.txt
+    test: ./configs/split/cadis_test.txt
+
+  validation_graph: 
+    - /path/to/CaDISv2/Video10/Graphs_EXP2/Video10_frame000310_sg.pt
+    - /path/to/CaDISv2/Video10/Graphs_EXP2/Video10_frame005540_sg.pt
+    - /path/to/CaDISv2/Video10/Graphs_EXP2/Video10_frame018900_sg.pt
+    - /path/to/CaDISv2/Video10/Graphs_EXP2/Video10_frame020240_sg.pt
+    - /path/to/CaDISv2/Video07/Graphs_EXP2/Video7_frame000560_sg.pt
+    - /path/to/CaDISv2/Video07/Graphs_EXP2/Video7_frame001520_sg.pt
+    - /path/to/CaDISv2/Video07/Graphs_EXP2/Video7_frame008050_sg.pt
+    - /path/to/CaDISv2/Video07/Graphs_EXP2/Video7_frame011450_sg.pt
+    - /path/to/CaDISv2/Video02/Graphs_EXP2/Video2_frame000450_sg.pt
+    - /path/to/CaDISv2/Video02/Graphs_EXP2/Video2_frame005190_sg.pt
+    - /path/to/CaDISv2/Video02/Graphs_EXP2/Video2_frame011470_sg.pt
+    - /path/to/CaDISv2/Video02/Graphs_EXP2/Video2_frame009050_sg.pt
+    - /path/to/CaDISv2/Video12/Graphs_EXP2/Video12_frame000890_sg.pt
+    - /path/to/CaDISv2/Video12/Graphs_EXP2/Video12_frame006790_sg.pt
+    - /path/to/CaDISv2/Video12/Graphs_EXP2/Video12_frame013290_sg.pt
+    - /path/to/CaDISv2/Video12/Graphs_EXP2/Video12_frame019400_sg.pt     

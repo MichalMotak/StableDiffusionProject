@@ -1,0 +1,35 @@
+load_checkpoint: "50"
+device: cuda
+ckpt_folder:
+save_folder:
+
+model:
+  dim: 128
+  dim_mults: 1, 2, 4, 8
+  num_classes: 256
+  cond_drop_prob: 0.2
+
+diffusion:
+  timesteps: 1000
+  sampling_timesteps: 250  
+
+trainer:
+  num_workers: 16
+
+dataset:
+  mode: test
+  image_size: 128
+  data_root: /path/to/CaDISv2
+  
+  embedding_type: segclip
+  model_segclip: ./results/graphencoder_segclip/model.pt
+  graph_input_dim: 21
+  graph_hidden_dim: 256
+  graph_embedding_dim: 256 
+  trainable: False
+  return_graph_emb: True
+  
+  split_files:
+    train: ./configs/split/cadis_train.txt
+    val: ./configs/split/cadis_val.txt
+    test: ./configs/split/cadis_test.txt

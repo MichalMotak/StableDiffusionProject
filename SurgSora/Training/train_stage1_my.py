@@ -83,6 +83,113 @@ check_min_version("0.24.0.dev0")
 logger = get_logger(__name__, log_level="INFO")
 
 
+def overlay_segmentation(image, rgb_mask, alpha=0.5):
+    """
+    Overlay a color segmentation mask on top of an image with transparency.
+
+    Args:
+        image (np.ndarray): Original image, shape (H, W, 3), dtype uint8, range [0,255].
+        rgb_mask (np.ndarray): Segmentation mask in RGB colors, same shape and dtype.
+        alpha (float): Transparency for the mask. 0 = only image, 1 = only mask.
+
+    Returns:
+        np.ndarray: Blended RGB image, dtype uint8, shape (H, W, 3).
+    """
+    assert image.shape == rgb_mask.shape, f"Shape mismatch: {image.shape} vs {rgb_mask.shape}"
+    assert 0.0 <= alpha <= 1.0, "alpha must be between 0 and 1"
+
+    # Convert to float for blending
+    image_f = image.astype(np.float32)
+    mask_f = rgb_mask.astype(np.float32)
+
+    # Blend: weighted average
+    blended = (1 - alpha) * image_f + alpha * mask_f
+
+    # Clip and convert back to uint8
+    blended = np.clip(blended, 0, 255).astype(np.uint8)
+    return blended
+
+def grayscale_to_color_mask(seg_image, dataset):
+    """
+    Convert grayscale-like segmentation image [H, W, 3] with values 0–13
+    into a color RGB visualization [H, W, 3].
+
+    Args:
+        seg_image (np.ndarray): Input segmentation image, shape (H, W, 3), dtype uint8,
+                                values in range [0, 13].
+    Returns:
+        np.ndarray: RGB color image of shape (H, W, 3), dtype uint8.
+    """
+    # assert seg_image.ndim == 3 and seg_image.shape[2] == 3, \
+    #     f"Expected [H,W,3], got {seg_image.shape}"
+
+    # Convert to single-channel class map
+    class_map = seg_image.astype(np.uint8)  # values 0–13
+
+    # Define a color palette (you can customize)
+    if dataset =="cataract":
+        color_palette = np.array([
+            [  0,   0,   0],   # 0: background
+            [128,   0,   0],   # 1
+            [  0, 128,   0],   # 2
+            [128, 128,   0],   # 3
+            [  0,   0, 128],   # 4
+            [128,   0, 128],   # 5
+            [  0, 128, 128],   # 6
+            [128, 128, 128],   # 7
+            [ 64,   0,   0],   # 8
+            [192,   0,   0],   # 9
+            [ 64, 128,   0],   # 10
+            [192, 128,   0],   # 11
+            [ 64,   0, 128],   # 12
+            [192,   0, 128],   # 13
+        ], dtype=np.uint8)
+
+    elif dataset =="cadis":
+        color_palette = np.array([
+        [  0,   0,   0],   # 0  background
+        [128,   0,   0],   # 1
+        [  0, 128,   0],   # 2
+        [128, 128,   0],   # 3
+        [  0,   0, 128],   # 4
+        [128,   0, 128],   # 5
+        [  0, 128, 128],   # 6
+        [128, 128, 128],   # 7
+        [ 64,   0,   0],   # 8
+        [192,   0,   0],   # 9
+        [ 64, 128,   0],   # 10
+        [192, 128,   0],   # 11
+        [ 64,   0, 128],   # 12
+        [192,   0, 128],   # 13
+        [ 64, 128, 128],   # 14
+        [192, 128, 128],   # 15
+        [  0,  64,   0],   # 16
+        [128,  64,   0],   # 17
+        [  0, 192,   0],   # 18
+        [128, 192,   0],   # 19
+        [  0,  64, 128],   # 20
+        [128,  64, 128],   # 21
+        [  0, 192, 128],   # 22
+        [128, 192, 128],   # 23
+        [ 64,  64,   0],   # 24
+        [192,  64,   0],   # 25
+        [ 64, 192,   0],   # 26
+        [192, 192,   0],   # 27
+        [ 64,  64, 128],   # 28
+        [192,  64, 128],   # 29
+        [ 64, 192, 128],   # 30
+        [192, 192, 128],   # 31
+        [  0,  64, 192],   # 32
+        [128,  64, 192],   # 33
+        [  0, 192, 192],   # 34
+        [255, 255, 255],   # 35  (white / special)
+    ], dtype=np.uint8)
+
+    # Map class indices to colors
+    rgb_mask = color_palette[class_map]  # shape [H, W, 3]
+
+    return rgb_mask
+
 
 class DatasetMultimodalVideo(Dataset):
     def __init__(self, image_size = 256,  main_path=None, record = None, num_frames = 21, limit_frames = None):
@@ -915,6 +1022,16 @@ def parse_args():
         default=1,
     )
 
+
+    parser.add_argument(
+        "--tool_loss_weight",
+        type=float,
+        default=0,
+    )
+
+
+
+
     
     args = parser.parse_args()
     env_local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -930,7 +1047,7 @@ def parse_args():
 
 def main():
 
-    # setup_cuda(use_memory_fraction=0.5, num_threads=16, visible_devices="0,1", multiGPU=True)
+    # setup_cuda(use_memory_fraction=0.5, num_threads=16, visible_devices="0,1,2", multiGPU=True)
     setup_cuda(use_memory_fraction=0.5, num_threads=16, visible_devices="0", multiGPU=False)
 
     args = parse_args()
@@ -1213,8 +1330,8 @@ def main():
     #                                 main_path=f'/home/MichalMo/projects/ControlNet-diffusers/records_cadis_1/records_single_files',
     #                                 record = "r2", num_frames= args.num_frames, limit_frames = None)
 
-    train_dataset = DatasetRetinaVideo(image_size=256, from_file='/home/MichalMo/projects/SurGrID/datasets/Cataract-1K/data_train_789_30percent.pkl')
-
+    train_dataset = DatasetRetinaVideo(image_size=256, from_file='/home/MichalMo/projects/SurGrID/datasets/Cataract-1K/data_testing.pkl')
+    # train_dataset = DatasetRetinaVideo(image_size=256, from_file='/home/MichalMo/projects/SurGrID/datasets/Cataract-1K/data_train_789_30percent.pkl')
 
     sampler = RandomSampler(train_dataset)
     train_dataloader = torch.utils.data.DataLoader(
@@ -1236,7 +1353,9 @@ def main():
     #                             main_path=f'/home/MichalMo/projects/ControlNet-diffusers/records_cadis_1/records_single_files',
     #                             record = "r2", num_frames= args.num_frames, limit_frames = None)
     
-    test_dataset = DatasetRetinaVideo(image_size=256, from_file='/home/MichalMo/projects/SurGrID/datasets/Cataract-1K/data_test_789_30percent.pkl')
+    test_dataset = DatasetRetinaVideo(image_size=256, from_file='/home/MichalMo/projects/SurGrID/datasets/Cataract-1K/data_test.pkl')
+    # test_dataset = DatasetRetinaVideo(image_size=256, from_file='/home/MichalMo/projects/SurGrID/datasets/Cataract-1K/data_test_789_30percent.pkl')
+
     # TODO: change to our dataset
 
     test_loader = create_iterator(1, test_dataset)
@@ -1285,6 +1404,10 @@ def main():
 
 
     print("3 ====")
+
+
+    # if args.tool_loss_weight > 0:
+    #     tool_loss_weight = args.tool_loss_weight
 
 
     # Train!
@@ -1508,7 +1631,7 @@ def main():
                     pixel_values[:, 0, :, :, :].float())
 
                 added_time_ids = _get_add_time_ids(
-                    6, # frame per second
+                    7, # frame per second
                     127, # motion buket ids: the motion bucket id to use for the generated video. This can be used to control the motion of the generated video. Increasing the motion bucket id increases the motion of the generated video.
                     train_noise_aug, # noise_aug_strength == 0.0
                     encoder_hidden_states.dtype, # encoded image using CLIP
@@ -1567,6 +1690,7 @@ def main():
 
                 # 1. Resize to match DSI spatial resolution (e.g., 64x64)
                 dsi_mask_spatial = F.interpolate(my_gt_mask, size=(64, 64), mode='nearest')
+                print("dsi_mask_spatial shape ", dsi_mask_spatial.shape, dsi_mask_spatial.dtype, dsi_mask_spatial.device)
 
                 # 2. If the model expects 256 channels (SAM feature size), 
                 # you can pad or project. A common trick is to repeat classes:
@@ -1574,22 +1698,22 @@ def main():
                 ###############################################################
 
 
-                masks = torch.ones([2,1,64,64]).to(torch.float16).to(accelerator.device)
-                depths = torch.ones([2,1,256,256]).to(torch.float16).to(accelerator.device)
+                # masks = torch.ones([2,1,64,64]).to(torch.float16).to(accelerator.device)
+                # depths = torch.ones([2,1,256,256]).to(torch.float16).to(accelerator.device)
 
-                print("images shape ", pixel_values.shape, pixel_values.dtype, pixel_values.device)
-                print("masks shape ", masks.shape, masks.dtype, masks.device)
+                # print("images shape ", pixel_values.shape, pixel_values.dtype, pixel_values.device)
+                # print("masks shape ", masks.shape, masks.dtype, masks.device)
 
-                print("flows shape ", flows.shape, flows.dtype, flows.device)
-                print("depths shape ", depths.shape, depths.dtype, depths.device)
+                # print("flows shape ", flows.shape, flows.dtype, flows.device)
+                # print("depths shape ", depths.shape, depths.dtype, depths.device)
 
-                print("inp_noisy_latents shape ", inp_noisy_latents.shape, inp_noisy_latents.dtype, inp_noisy_latents.device)
-
-
+                # print("inp_noisy_latents shape ", inp_noisy_latents.shape, inp_noisy_latents.dtype, inp_noisy_latents.device)
 
 
-                print("encoder_hidden_states dtype ", encoder_hidden_states.dtype, encoder_hidden_states.device)
-                print("added_time_ids dtype ", added_time_ids.dtype, added_time_ids.device)
+
+
+                # print("encoder_hidden_states dtype ", encoder_hidden_states.dtype, encoder_hidden_states.device)
+                # print("added_time_ids dtype ", added_time_ids.dtype, added_time_ids.device)
 
 
                 # the first frame of the video
@@ -1610,6 +1734,7 @@ def main():
                     controlnet_mask=masks,           # [b, 256, 64, 64]
                     controlnet_depth=depths,        # [b,1,256,256]
                     return_dict=False,
+                    conditioning_scale = 1.0
                 )
             
                 # Predict the noise residual
@@ -1631,12 +1756,21 @@ def main():
                 denoised_latents = model_pred * c_out + c_skip * noisy_latents
                 weighing = (1 + sigmas ** 2) * (sigmas**-2.0)
 
+
+                # print("my_gt_mask shape ", my_gt_mask.shape, my_gt_mask.dtype, my_gt_mask.device)
+                # print("weighing shape ", weighing.shape, weighing.dtype, weighing.device)
+                # print("denoised_latents shape ", denoised_latents.shape, denoised_latents.dtype, denoised_latents.device)
+                # print("target shape ", target.shape, target.dtype, target.device)
+
+
+
                 # MSE loss
                 loss = torch.mean(
                     (weighing.float() * (denoised_latents.float() -
                      target.float()) ** 2).reshape(target.shape[0], -1),
                     dim=1,
                 )
+                print("loss ", loss.shape)
                 loss = loss.mean()
 
                 epoch_losses.append(loss.detach().item())
@@ -1733,6 +1867,28 @@ def main():
 
                     ##############################################
 
+                # --- SAVE PIPELINE ---
+                if accelerator.is_main_process:
+                    controlnet_unwrapped = accelerator.unwrap_model(controlnet)
+                    unet_unwrapped = accelerator.unwrap_model(unet)
+                    image_encoder_unwrapped = accelerator.unwrap_model(image_encoder)
+                    vae_unwrapped = accelerator.unwrap_model(vae)
+
+                    pipeline = DualFlowControlNetPipeline.from_pretrained(
+                        args.pretrained_model_name_or_path,
+                        unet=unet_unwrapped,
+                        controlnet=controlnet_unwrapped,
+                        image_encoder=image_encoder_unwrapped,
+                        vae=vae_unwrapped,
+                        revision=args.revision,
+                        torch_dtype=weight_dtype,
+                    )
+
+                    # pipeline_save_path = os.path.join(args.output_dir, f"pipeline-{global_step}")
+                    pipeline.save_pretrained(args.output_dir)
+
+                    logger.info(f"Pipeline saved to {args.output_dir}")
+
 
                 # sample images!
                 if (
@@ -1791,10 +1947,10 @@ def main():
 
 
                             # Inside your training loop
-                            val_masks = batch['mask']  # Shape: [B, 14, 256, 256]
+                            val_masks_org = val_batch['mask']  # Shape: [B, 14, 256, 256]
 
                             # 1. Resize to match DSI spatial resolution (e.g., 64x64)
-                            dsi_mask_spatial = F.interpolate(val_masks, size=(64, 64), mode='nearest')
+                            dsi_mask_spatial = F.interpolate(val_masks_org, size=(64, 64), mode='nearest')
 
                             # 2. If the model expects 256 channels (SAM feature size), 
                             # you can pad or project. A common trick is to repeat classes:
@@ -1870,18 +2026,26 @@ def main():
                             viz_flows = np.stack(viz_flows)  # [t-1, h, w, c]
                             flow_nps = viz_flows
 
-                            
+                            masks_nps = grayscale_to_color_mask(val_masks_org[0].numpy(), "cataract")
+
+
                             out_nps = video_frames
                             gt_nps = (val_pixel_values[0].permute(0, 2, 3, 1).cpu().numpy()*255).astype(np.uint8)
                             ctrl_nps = (val_controlnet_image[0].permute(0, 2, 3, 1).cpu().numpy()*255).astype(np.uint8)
                             depth_nps =  (val_controlnet_depth[0]).astype(np.uint8)
+
+
+                            out_nps_overlayed = overlay_segmentation(np.array(out_nps), masks_nps)
+                            gt_nps_overlayed = overlay_segmentation(np.array(gt_nps), masks_nps)
 
                             # ctrl_nps - first frame for controlnet,
                             # flow_nps - viualization of flows
                             # depth_nps - depths
                             # out_nps - output video 
                             # gt_nps - ground truth video
-                            total_nps = np.concatenate([ctrl_nps, flow_nps, depth_nps, out_nps, gt_nps], axis=2)
+                            # total_nps = np.concatenate([ctrl_nps, flow_nps, depth_nps, out_nps, gt_nps], axis=2)
+                            total_nps = np.concatenate([ctrl_nps, flow_nps, masks_nps, depth_nps, out_nps, out_nps_overlayed, gt_nps, gt_nps_overlayed], axis=2)
+
 
                             # video_name = val_batch['video_name'][0].replace('/', '_').split('.')[0]
                             video_name = val_batch['video_name']
@@ -1907,28 +2071,7 @@ def main():
 
     # Create the pipeline using the trained modules and save it.
     accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
-        controlnet = accelerator.unwrap_model(controlnet)
-        if args.use_ema:
-            ema_controlnet.copy_to(controlnet.parameters())
 
-        pipeline = DualFlowControlNetPipeline.from_pretrained(
-            args.pretrained_model_name_or_path,
-            image_encoder=accelerator.unwrap_model(image_encoder),
-            vae=accelerator.unwrap_model(vae),
-            unet=unet,
-            controlnet=controlnet,
-            revision=args.revision,
-        )
-        pipeline.save_pretrained(args.output_dir)
-
-        if args.push_to_hub:
-            upload_folder(
-                repo_id=repo_id,
-                folder_path=args.output_dir,
-                commit_message="End of training",
-                ignore_patterns=["step_*", "epoch_*"],
-            )
     accelerator.end_training()
 
 

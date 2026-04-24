@@ -1404,10 +1404,12 @@ def main():
 
     args.global_batch_size = args.per_gpu_batch_size * accelerator.num_processes
 
-    # train_dataset = DatasetMultimodalVideo(image_size=256,
-    #                                 main_path=f'/home/MichalMo/projects/ControlNet-diffusers/records_cadis_1/records_single_files',
-    #                                 record = "r2", num_frames= args.num_frames, limit_frames = None)
-    train_dataset = DatasetRetinaVideo(image_size=256, from_file='/home/MichalMo/projects/SurGrID/datasets/Cataract-1K/data.pkl')
+    train_dataset = DatasetMultimodalVideo(image_size=256,
+                                    main_path=f'/home/MichalMo/projects/ControlNet-diffusers/records_cadis_1/records_single_files',
+                                    record = "r2", num_frames= args.num_frames, limit_frames = None)
+
+
+    # train_dataset = DatasetRetinaVideo(image_size=256, from_file='/home/MichalMo/projects/SurGrID/datasets/Cataract-1K/data.pkl')
 
 
     sampler = RandomSampler(train_dataset)
@@ -1419,12 +1421,12 @@ def main():
     )
 
 
-    # test_dataset = DatasetMultimodalVideo(image_size=256,
-    #                             main_path=f'/home/MichalMo/projects/ControlNet-diffusers/records_cadis_1/records_single_files',
-    #                             record = "r2", num_frames= args.num_frames, limit_frames = None)
+    test_dataset = DatasetMultimodalVideo(image_size=256,
+                                main_path=f'/home/MichalMo/projects/ControlNet-diffusers/records_cadis_1/records_single_files',
+                                record = "r2", num_frames= args.num_frames, limit_frames = None)
     
 
-    test_dataset = DatasetRetinaVideo(image_size=256, from_file='/home/MichalMo/projects/SurGrID/datasets/Cataract-1K/data_test.pkl')
+    # test_dataset = DatasetRetinaVideo(image_size=256, from_file='/home/MichalMo/projects/SurGrID/datasets/Cataract-1K/data_test.pkl')
 
     checkpointing_steps = len(train_dataloader)
     validation_steps = len(train_dataloader)
